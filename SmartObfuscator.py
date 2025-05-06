@@ -14,9 +14,10 @@ import re
 import random
 
 #### CONSTANTS ####
+INIT_VARS_COUNT = 10                    # Number of initial dummy variables to generate at the start of the code. For the demo version - those will be the only reused variables.
 DUMMY_LINE_GENERATOR_STRENGTH = 2       # Max number of dummy lines to generate in a row
 DUMMY_CODE_FALSE_FLOW_MULTIPLIER = 2    # Multiplier of dummy code in false control flow according to DUMMY_LINE_GENERATOR_STRENGTH
-BRANCHING_COEFFICIENT = 0.3             # Probability of branching in control flow obfuscation (for dummy and for real code)
+BRANCHING_COEFFICIENT = 0.5             # Probability of branching in control flow obfuscation (for dummy and for real code)
 CONDUSING_VAR_NAMES = [
     "isMemoryAligned",
     "validateChecksum",
@@ -42,7 +43,7 @@ CONDUSING_VAR_NAMES = [
 
 # These evaluate to TRUE if var_1 and var_2 are both positive
 TRUE_PREDICATES_TEMPLATES = [
-    "(iszero(lt(mul({v1}, {v1}), {v1})))",  # {v1}^2 >= {v1}
+    "(iszero(lt(mul({v1}, {v2}), {v1})))",  # {v1}*{v2} >= {v1}
     "(eq(mod(mul({v1}, add({v2}, 1)), {v1}), mod(add({v2}, 1), {v1})))",  # (v1 * (v2 + 1)) % v1 == (v2 + 1) % v1
     "(iszero(sub(1, eq(and({v1}, {v2}), and({v2}, {v1}))))))",  # and is symmetric
     "(eq(sub(add({v1}, {v2}), {v2}), {v1}))",  # (v1 + v2 - v2) == v1
@@ -51,17 +52,17 @@ TRUE_PREDICATES_TEMPLATES = [
     "(eq(shl(0, {v1}), {v1}))",  # shifting left by 0 bits gives same value
 ]
 
-# These evaluate to FALSE if var_1 and var_2 are both positive
 FALSE_PREDICATES_TEMPLATES = [
-    "(lt(add({v1}, {v2}), 0))",  # sum of positives < 0
-    "(lt(mul({v1}, {v2}), 0))",  # product < 0
-    "(eq(add({v1}, {v2}), 0))",  # sum == 0
-    "(gt(xor({v1}, {v1}), 0))",  # v1 ^ v1 > 0
-    "(iszero({v1}))",  # v1 == 0
-    "(gt(sub({v1}, {v1}), 0))",  # 0 > 0
-    "(lt(mod({v2}, {v1}), 0))",  # mod of two positive numbers < 0
-    "(eq(and({v1}, {v2}), xor({v1}, {v2})))",  # and == xor for positive values — unlikely
+    "(lt(sub({v1}, neg({v2})), 0))",  # v1 - (-v2) < 0 → v1 + v2 < 0
+    "(lt(mul(sub({v1}, {v2}), add({v2}, {v2})), 0))",  # (v1 - v2) * (2*v2) < 0
+    "(eq(add({v1}, neg({v2})), sub({v2}, {v1})))",  # v1 - v2 == v2 - v1 → only if both zero
+    "(gt(shl(xor({v1}, {v1}), 1), 0))",  # (v1 ^ v1) << 1 > 0 → always 0
+    "(iszero(div({v1}, {v1})))",  # v1 / v1 == 0 → always 1
+    "(gt(sub(and({v1}, 1), and({v1}, 1)), 0))",  # (v1 & 1) - (v1 & 1) > 0 → 0 > 0
+    "(lt(mod({v2}, add({v1}, 1)), neg({v1})))",  # v2 % (v1 + 1) < -v1 → impossible for positives
+    "(eq(or({v1}, {v2}), xor({v1}, {v2})))",  # v1 | v2 == v1 ^ v2 → only if v1 & v2 == 0
 ]
+
 
 # TODO: Fix scope problem
 # Currently works but all considered as depth 1 and dict will stay length 1. Should fix with depth according to scopes.
@@ -116,19 +117,19 @@ class SmartObfuscator:
                 return "eq(0, 0)"
             else:
                 return "eq(1, 0)"
-        random_var_1 = random.choice(self.init_dummy_vars[self.current_depth])
-        random_var_2 = random.choice(self.init_dummy_vars[self.current_depth])
+        random_var_1, random_var_2 = random.sample(self.init_dummy_vars[self.current_depth], 2)
         if eval_to:
             predicate_template = random.choice(TRUE_PREDICATES_TEMPLATES)
         else:
             predicate_template = random.choice(FALSE_PREDICATES_TEMPLATES)
         return predicate_template.format(v1=random_var_1, v2=random_var_2)
 
-    def _generate_dummy_var_name(self) -> str:
+    def _generate_dummy_var_name(self, init_var = False) -> str:
         var_name = f"{random.choice(CONDUSING_VAR_NAMES)}_{random.randint(0, 10)}"
         while var_name in self.init_dummy_vars[self.current_depth]:
             var_name = f"{random.choice(CONDUSING_VAR_NAMES)}_{random.randint(0, 10)}"
-        self.init_dummy_vars[self.current_depth].append(var_name)
+        if init_var:
+            self.init_dummy_vars[self.current_depth].append(var_name)
         return var_name
 
     def _generate_dummy_code(self, num_of_lines: int) -> str:
@@ -199,6 +200,11 @@ class SmartObfuscator:
     def control_flow_obfuscation(self) -> str:
         source_code = self.yul_code
         prolog, main_logic, epilog = self._split_main_logic(source_code)
+        var_init = ""
+        for _ in range(INIT_VARS_COUNT):
+            var_init += f"let {self._generate_dummy_var_name(init_var=True)} := {random.randint(1,100)}\n"
+        prolog += "\n" + var_init
+
         branch = 0
         while branch < BRANCHING_COEFFICIENT:
             if random.random() < 0.5:
@@ -213,11 +219,11 @@ class SmartObfuscator:
         depth = 1   # When depth == 0, code block is finished
         main_logic_lines = main_logic.split("\n")
         obfuscated_main_logic = ""
-
+        
         for line in main_logic_lines:
             depth += line.count("{") - line.count("}")
             if depth > 0:
-                dummy_code = self._generate_dummy_code(num_of_lines=random.randint(1, DUMMY_LINE_GENERATOR_STRENGTH))
+                dummy_code = self._generate_dummy_code(num_of_lines=random.randint(0, DUMMY_LINE_GENERATOR_STRENGTH))
                 obfuscated_main_logic += dummy_code
                 line = line.strip()
 
@@ -225,7 +231,6 @@ class SmartObfuscator:
                     
         self.obfuscated_yul_code = prolog + obfuscated_main_logic + epilog
         return self.obfuscated_yul_code
-
 
     def obfuscate(self) -> str:
         obfuscation_methods = [
@@ -235,7 +240,6 @@ class SmartObfuscator:
             self.obfuscated_yul_code = method()
 
         return self.obfuscated_yul_code
-
 
     def get_obfuscated_yul(self) -> str:
         if self.obfuscated_yul_code is None:
