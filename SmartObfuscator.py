@@ -245,7 +245,7 @@ class SmartObfuscator:
         return self.obfuscated_yul_code
     
 
-### TESTING ###
+### Usage Example ###
 
 if __name__ == "__main__":
     yul_code = '''
