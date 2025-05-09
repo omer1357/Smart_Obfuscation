@@ -64,8 +64,6 @@ FALSE_PREDICATES_TEMPLATES = [
 ]
 
 
-# TODO: Fix scope problem
-# Currently works but all considered as depth 1 and dict will stay length 1. Should fix with depth according to scopes.
 
 class SmartObfuscator:
     def __init__(self, yul_code: str):
